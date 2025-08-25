@@ -1,0 +1,13 @@
+.env
+.DS_Store
+node_modules/
+*.log
+docs/
+data/
+ollama/
+*.pdf
+*.dylib
+*.so
+__pycache__/
+*.pyc
+EOF
