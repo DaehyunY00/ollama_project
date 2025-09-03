@@ -326,6 +326,67 @@ class DefenseVectorStore:
             logger.error(f"컬렉션 정보 내보내기 실패: {e}")
             return False
 
+    def get_all_documents(self) -> List[Document]:
+        """벡터 스토어의 모든 문서 반환 (BM25 인덱스 구축용)"""
+        try:
+            if self.vector_store is None:
+                self._initialize_vector_store()
+            
+            logger.info("전체 문서 조회 시작...")
+            
+            # ChromaDB에서 모든 문서 조회
+            results = self.vector_store.get()
+            
+            documents = []
+            if results and 'documents' in results:
+                doc_count = len(results['documents'])
+                
+                for i in range(doc_count):
+                    # 문서 내용
+                    content = results['documents'][i] if i < len(results['documents']) else ""
+                    
+                    # 메타데이터 처리
+                    metadata = {}
+                    if 'metadatas' in results and results['metadatas'] and i < len(results['metadatas']):
+                        metadata = results['metadatas'][i] or {}
+                    
+                    # Document 객체 생성
+                    if content:  # 빈 내용 제외
+                        doc = Document(
+                            page_content=content,
+                            metadata=metadata
+                        )
+                        documents.append(doc)
+            
+            logger.info(f"전체 문서 조회 완료: {len(documents)}개 문서")
+            return documents
+            
+        except Exception as e:
+            logger.error(f"전체 문서 조회 실패: {e}")
+            return []
+
+    def get_collection_info(self) -> Dict[str, Any]:
+        """컬렉션 정보 조회"""
+        try:
+            if self.vector_store is None:
+                self._initialize_vector_store()
+            
+            # ChromaDB 컬렉션 정보
+            collection = self.vector_store._collection
+            count = collection.count()
+            
+            return {
+                'collection_name': self.collection_name,
+                'document_count': count,
+                'persist_directory': self.persist_directory
+            }
+        except Exception as e:
+            logger.error(f"컬렉션 정보 조회 실패: {e}")
+            return {
+                'collection_name': self.collection_name,
+                'document_count': 0,
+                'persist_directory': self.persist_directory
+            }
 
 # time 모듈 import 추가
 import time

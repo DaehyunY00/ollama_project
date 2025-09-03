@@ -1,126 +1,128 @@
-# 국방 M&S RAG 시스템 설정
-project:
-  name: "Defense M&S RAG System"
-  version: "1.0.0"
-  description: "국방 모델링 및 시뮬레이션 문서 기반 RAG 시스템"
+# 국방 M&S RAG 시스템 설정 파일
+# 하이브리드 검색 기능 포함
 
 # Ollama 설정
 ollama:
   host: "http://localhost:11434"
   model: "llama3:8b"
+  # model: "llama3:8b-instruct-q2_K"
   embedding_model: "nomic-embed-text"
-  temperature: 0.7
-  max_tokens: 2048
-  timeout: 60
+  temperature: 0.9
+  max_tokens: 5096
+  timeout: 120
 
 # 벡터 데이터베이스 설정
-vector_db:
-  type: "chromadb"
+vector_store:
   persist_directory: "./data/chroma_db"
   collection_name: "defense_ms_docs"
-  embedding_dimension: 768
-  similarity_threshold: 0.7
 
-# 문서 처리 설정 (웹페이지 지원 추가)
+# 임베딩 설정
+embeddings:
+  model: "nomic-embed-text"
+  host: "http://localhost:11434"
+
+# 문서 처리 설정
 document_processing:
   chunk_size: 1000
   chunk_overlap: 200
-  supported_formats:
-    - "pdf"
-    - "txt"
-    - "md"
-    - "docx"
-    - "webpage"
-  pdf_extraction:
-    method: "PyPDF2"
-    preserve_layout: true
-  text_splitting:
-    method: "recursive"
-    separators: ["\n\n", "\n", " ", ""]
-  web_scraping:
-    timeout: 30
-    delay_between_requests: 1
-    max_retries: 3
-    user_agent: "Defense-RAG-System/1.0"
+  supported_formats: ["pdf", "txt", "md", "docx", "webpage"]
+  max_file_size_mb: 100
 
-# RAG 시스템 설정 (프롬프트 엔지니어링 강화)
+# RAG 시스템 설정
 rag:
+  # 검색 설정
   retrieval:
-    top_k: 5
-    search_type: "similarity"
+    top_k: 10
+    search_type: 'hybrid'        # 'similarity', 'hybrid', 'similarity_with_score'
     score_threshold: 0.7
+    # 하이브리드 검색 설정
+    hybrid_alpha: 0.7            # 벡터:키워드 = 7:3 비율
+    use_bm25: true              # BM25 키워드 검색 활성화
+    use_reranking: false        # 재순위 기능 (향후 구현)
+    rerank_top_k: 20            # 재순위 전 후보 문서 수
+    # 쿼리 확장 설정
+    query_expansion: true       # 쿼리 확장 활성화
+    max_expansions: 10          # 최대 확장 쿼리 수
+  
+  # 답변 생성 설정
   generation:
-    max_context_length: 4000
+    max_context_length: 10000    # 최대 컨텍스트 길이
     system_prompt_template: |
-      당신은 국방 모델링 및 시뮬레이션(M&S) 분야의 최고 전문가입니다.
+      당신은 국방 모델링 및 시뮬레이션(M&S) 분야의 전문가입니다.
+      제공된 문서들을 바탕으로 정확하고 전문적인 답변을 제공해주세요.
       
-      **전문 역량:**
-      - 20년 이상의 국방 M&S 실무 경험
-      - 국내외 M&S 표준 및 기술 동향에 대한 깊은 이해
-      - 전투 효과 분석, 시뮬레이션 설계, VV&A 전문성
-      - HLA, DIS, SISO 표준 전문가
-      
-      **답변 원칙:**
-      1. 정확하고 기술적으로 정밀한 정보 제공
-      2. 실무에 직접 적용 가능한 구체적 가이드
-      3. 관련 표준, 절차, 모범사례 포함
-      4. 불확실한 정보는 명시적으로 구분
-      5. 한국의 국방 환경과 요구사항 고려
+      답변 지침:
+      1. 제공된 문서 내용만을 바탕으로 답변하세요
+      2. 국방 M&S 전문 용어를 정확히 사용하세요
+      3. 답변을 구체적이고 실무적으로 작성하세요
+      4. 불확실한 내용은 명시하세요
+      5. 필요시 관련 표준이나 절차를 언급하세요
+    
     user_prompt_template: |
-      관련 문서 내용:
+      다음 문서들을 참고하여 질문에 답변해주세요:
+      
+      [참고 문서들]
       {context}
       
-      질문: {question}
+      [질문]
+      {query}
       
-      위 문서 내용을 참고하여 질문에 대해 전문적이고 정확한 답변을 해주세요.
+      [도메인]
+      {domain}
+
+# 파일 생성 설정
+file_generation:
+  output_directory: "./data/output"
+  templates_directory: "./data/templates"
+  formats:
+    xml:
+      encoding: "utf-8"
+      pretty_print: true
+    json:
+      encoding: "utf-8"
+      indent: 2
+      ensure_ascii: false
+    csv:
+      encoding: "utf-8"
+      delimiter: ","
+      quoting: "minimal"
 
 # 로깅 설정
 logging:
   level: "INFO"
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  file_path: "./logs/rag_system.log"
-  max_file_size: "10MB"
-  backup_count: 5
+  file: "./logs/rag_system.log"
 
-# 국방 M&S 특화 설정
-defense_ms:
-  domains:
-    - "지상전"
-    - "해상전" 
-    - "공중전"
-    - "우주전"
-    - "사이버전"
-    - "합동작전"
-  simulation_types:
-    - "구성적 시뮬레이션"
-    - "가상 시뮬레이션"
-    - "실시간 시뮬레이션"
-    - "혼합 시뮬레이션"
-  standards:
-    - "HLA (High Level Architecture)"
-    - "DIS (Distributed Interactive Simulation)"
-    - "SISO Standards"
-    - "국방 M&S 표준"
-  keywords:
-    general: ["M&S", "모델링", "시뮬레이션", "VV&A", "검증", "확인"]
-    technical: ["HLA", "DIS", "RTI", "FOM", "SOM", "Federation"]
-    analysis: ["효과도", "분석", "평가", "측정", "지표"]
+# 데이터 검증 설정
+validation:
+  xml:
+    validate_schema: true
+    required_elements: ["metadata", "parameters"]
+  json:
+    validate_schema: true
+    required_fields: ["model_info"]
+  csv:
+    validate_headers: true
+    min_rows: 1
+    max_rows: 10000
 
-# 데이터 소스 설정
-data_sources:
-  local_documents:
-    directory: "./docs/pdfs"
-    auto_load: true
-  web_sources:
-    urls_file: "./data/ms_urls.txt"
-    auto_load: false
-  sample_data:
-    directory: "./data/samples"
-    enabled: true
-
-# 캐시 설정
-cache:
-  enabled: true
-  type: "memory"
-  ttl: 3600
-  max_size: 1000
+# 도메인 특화 설정
+domains:
+  지상전:
+    keywords: ["지상작전", "육군", "전차", "장갑차", "보병", "기갑", "포병"]
+    weight: 1.0
+  해상전:
+    keywords: ["해상작전", "해군", "함정", "잠수함", "해상전투", "함대"]
+    weight: 1.0
+  공중전:
+    keywords: ["공중작전", "공군", "항공기", "전투기", "공중전투", "항공"]
+    weight: 1.0
+  우주전:
+    keywords: ["우주작전", "위성", "우주전", "우주자산", "우주감시"]
+    weight: 1.0
+  사이버전:
+    keywords: ["사이버작전", "사이버전", "정보전", "전자전", "사이버보안"]
+    weight: 1.0
+  합동작전:
+    keywords: ["합동작전", "연합작전", "통합작전", "합동", "연합"]
+    weight: 1.0

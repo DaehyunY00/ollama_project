@@ -1,6 +1,7 @@
 """
 Ollama LLM 클라이언트
 국방 M&S 특화 프롬프트와 응답 생성을 담당하는 모듈
+실제 파일명 기반 출처 표시 기능 포함
 """
 
 import logging
@@ -8,6 +9,7 @@ from typing import Dict, Any, Optional, List, Iterator
 import yaml
 import time
 import ollama
+import re
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -62,8 +64,7 @@ class DefenseOllamaClient:
         return {
             'ollama': {
                 'host': 'http://localhost:11434',
-                # 'model': 'llama3:8b',
-                'model': 'llama3.1:8b-instruct-q8_0', # 고품질 모델
+                'model': 'llama3:8b',
                 'temperature': 0.7,
                 'max_tokens': 2048,
                 'timeout': 60
@@ -90,6 +91,84 @@ class DefenseOllamaClient:
             logger.error(f"모델 연결 실패: {e}")
             logger.error(f"모델 다운로드 명령어: ollama pull {self.model}")
             raise
+    
+    def _extract_sources_from_context(self, context: str) -> List[Dict[str, str]]:
+        """컨텍스트에서 소스 정보 추출"""
+        sources = []
+        
+        try:
+            # 문서 헤더 패턴: [문서 N: 파일명 - 도메인 영역 - 구간 M]
+            pattern = r'\[문서\s+(\d+):\s+([^-]+)\s+-\s+([^-]+)\s+영역\s+-\s+구간\s+(\d+)\]'
+            matches = re.findall(pattern, context)
+            
+            for match in matches:
+                doc_num, filename, domain, chunk_id = match
+                sources.append({
+                    'doc_number': doc_num.strip(),
+                    'filename': filename.strip(),
+                    'domain': domain.strip(),
+                    'chunk_id': chunk_id.strip()
+                })
+            
+            # 중복 파일명 제거
+            unique_sources = []
+            seen_files = set()
+            for source in sources:
+                if source['filename'] not in seen_files and source['filename'] != "알 수 없는 파일":
+                    unique_sources.append(source)
+                    seen_files.add(source['filename'])
+            
+            return unique_sources
+            
+        except Exception as e:
+            logger.error(f"소스 정보 추출 실패: {e}")
+            return []
+    
+    def _format_source_list(self, sources: List[Dict[str, str]]) -> str:
+        """소스 목록 형식화"""
+        if not sources:
+            return "참고할 수 있는 문서가 없습니다."
+        
+        formatted = []
+        for i, source in enumerate(sources, 1):
+            filename = source['filename']
+            domain = source['domain']
+            formatted.append(f"{i}. {filename} ({domain} 영역)")
+        
+        return "\n".join(formatted)
+    
+    def _enhance_source_citations(self, answer: str, sources: List[Dict[str, str]]) -> str:
+        """답변의 출처 표시 강화"""
+        try:
+            # LLM이 이미 출처를 잘 표시했는지 확인
+            has_proper_sources = False
+            
+            if "**참고문서:**" in answer or "**출처:**" in answer or "**참고자료:**" in answer:
+                # 파일명이 올바르게 인식되었는지 검증
+                for source in sources:
+                    filename = source['filename']
+                    if filename in answer and filename != "알 수 없는 파일":
+                        has_proper_sources = True
+                        break
+            
+            # 출처가 없거나 부정확한 경우 수동 추가
+            if not has_proper_sources and sources:
+                source_list = []
+                for source in sources:
+                    filename = source['filename']
+                    domain = source['domain']
+                    if filename and filename != "알 수 없는 파일":
+                        source_list.append(f"- {filename} ({domain} 영역)")
+                
+                if source_list:
+                    citation = f"\n\n**참고문서:**\n" + "\n".join(source_list)
+                    return answer + citation
+            
+            return answer
+            
+        except Exception as e:
+            logger.error(f"출처 표시 강화 실패: {e}")
+            return answer
     
     def generate_response(
         self, 
@@ -186,27 +265,77 @@ class DefenseOllamaClient:
         context: str = "",
         domain: str = "일반"
     ) -> Dict[str, Any]:
-        """국방 M&S 특화 응답 생성"""
+        """국방 M&S 특화 응답 생성 (개선된 출처 표시)"""
         try:
+            start_time = time.time()
+            
+            # 컨텍스트에서 소스 정보 추출
+            sources = self._extract_sources_from_context(context)
+            logger.info(f"추출된 소스 정보: {len(sources)}개 파일")
+            
             # 도메인별 시스템 프롬프트 조정
             enhanced_system_prompt = self._get_domain_specific_prompt(domain)
             
-            # 국방 M&S 특화 사용자 프롬프트
-            enhanced_user_prompt = self._create_enhanced_user_prompt(query, context, domain)
+            # 출처 인식을 강화한 사용자 프롬프트
+            if context:
+                enhanced_user_prompt = f"""다음 참고 문서들을 바탕으로 질문에 답변해주세요.
+
+**참고 문서들:**
+{context}
+
+**질문:** {query}
+**영역:** {domain}
+
+**답변 작성 지침:**
+1. 위 참고 문서의 내용을 바탕으로 정확하고 전문적인 답변을 작성하세요.
+2. 답변 마지막에 반드시 아래 형식으로 참고한 실제 파일명들을 명시하세요:
+
+**참고문서:**
+{self._format_source_list(sources)}
+
+**중요 사항:**
+- "Document1", "문서1" 같은 일반적 표현은 절대 사용하지 마세요
+- 반드시 위에 제시된 실제 파일명을 사용하세요
+- 참고하지 않은 문서는 출처에 포함하지 마세요
+- 답변 내용과 출처가 일치하도록 작성하세요"""
+            else:
+                enhanced_user_prompt = f"""**질문 분석**
+영역: {domain}
+질문: {query}
+
+**요청사항**
+위 질문에 대해 국방 M&S 전문가로서 다음 구조로 답변해주세요:
+
+1. **핵심 답변** (2-3문장 요약)
+2. **기술적 세부설명**
+   - 주요 개념 및 원리
+   - 적용 방법론
+   - 기술적 고려사항
+3. **실무 적용방안**
+   - 구체적 구현 방법
+   - 도구 및 표준 활용
+   - 모범사례 및 사례연구
+4. **주의사항 및 제한사항**
+   - 기술적 한계
+   - 운용상 고려사항
+   - 보안 및 정책적 이슈
+5. **참고자료** (관련 표준, 문서, 추가 학습 자료)
+
+**답변 품질 기준:**
+- 기술적 정확성 우선
+- 실무 적용 가능성 중시
+- 국방 특수성 반영
+- 구체적이고 actionable한 정보 제공"""
             
+            # 메시지 구성
             messages = [
-                {
-                    "role": "system",
-                    "content": enhanced_system_prompt
-                },
-                {
-                    "role": "user",
-                    "content": enhanced_user_prompt
-                }
+                {"role": "system", "content": enhanced_system_prompt},
+                {"role": "user", "content": enhanced_user_prompt}
             ]
             
-            start_time = time.time()
+            logger.info(f"응답 생성 시작 (도메인: {domain}, 소스: {len(sources)}개)")
             
+            # LLM 호출
             response = self.client.chat(
                 model=self.model,
                 messages=messages,
@@ -219,29 +348,34 @@ class DefenseOllamaClient:
             )
             
             generation_time = time.time() - start_time
+            answer = response['message']['content']
+            
+            # 출처 정보 후처리 및 강화
+            formatted_answer = self._enhance_source_citations(answer, sources)
             
             result = {
-                'answer': response['message']['content'],
+                'answer': formatted_answer,
+                'model': self.model,
                 'domain': domain,
                 'generation_time': generation_time,
-                'model': self.model,
-                'context_used': bool(context),
-                'query_original': query
+                'sources_used': [s['filename'] for s in sources],
+                'context_length': len(context),
+                'source_count': len(sources)
             }
             
-            logger.info(f"국방 M&S 응답 생성 완료 - 도메인: {domain}, 시간: {generation_time:.2f}초")
+            logger.info(f"응답 생성 완료 - 소요시간: {generation_time:.2f}초, 소스: {len(sources)}개")
             return result
             
         except Exception as e:
-            logger.error(f"국방 M&S 응답 생성 실패: {e}")
+            logger.error(f"응답 생성 실패: {e}")
             return {
                 'answer': f"응답 생성 중 오류가 발생했습니다: {str(e)}",
-                'domain': domain,
-                'generation_time': 0,
                 'model': self.model,
-                'context_used': False,
-                'query_original': query,
-                'error': str(e)
+                'domain': domain,
+                'error': str(e),
+                'generation_time': 0,
+                'sources_used': [],
+                'source_count': 0
             }
     
     def _get_domain_specific_prompt(self, domain: str) -> str:
@@ -261,11 +395,11 @@ class DefenseOllamaClient:
 4. 불확실한 정보는 명시적으로 구분
 5. 한국의 국방 환경과 요구사항 고려
 
-**응답 형식:**
-- 핵심 답변을 먼저 제시
-- 기술적 세부사항을 단계별로 설명
-- 실무 적용 시 고려사항 포함
-- 관련 자료나 표준 문서 언급"""
+**출처 표시 규칙:**
+- 답변 끝에 반드시 "**참고문서:**" 섹션 포함
+- 실제 파일명을 정확히 기재 (예: "HLA표준문서.pdf", "전투시뮬레이션가이드.pdf")
+- "Document1", "문서1" 같은 일반적 표현 절대 금지
+- 참고하지 않은 문서는 출처에 포함하지 않음"""
 
         domain_prompts = {
             '지상전': f"""{base_prompt}
@@ -326,72 +460,9 @@ class DefenseOllamaClient:
         
         return domain_prompts.get(domain, base_prompt)
     
-    def _create_enhanced_user_prompt(self, query: str, context: str, domain: str) -> str:
-        """강화된 사용자 프롬프트 생성"""
-        if not context:
-            return f"""**질문 분석**
-영역: {domain}
-질문: {query}
-
-**요청사항**
-위 질문에 대해 국방 M&S 전문가로서 다음 구조로 답변해주세요:
-
-1. **핵심 답변** (2-3문장 요약)
-2. **기술적 세부설명**
-   - 주요 개념 및 원리
-   - 적용 방법론
-   - 기술적 고려사항
-3. **실무 적용방안**
-   - 구체적 구현 방법
-   - 도구 및 표준 활용
-   - 모범사례 및 사례연구
-4. **주의사항 및 제한사항**
-   - 기술적 한계
-   - 운용상 고려사항
-   - 보안 및 정책적 이슈
-5. **참고자료** (관련 표준, 문서, 추가 학습 자료)
-
-**답변 품질 기준:**
-- 기술적 정확성 우선
-- 실무 적용 가능성 중시
-- 국방 특수성 반영
-- 구체적이고 actionable한 정보 제공"""
-        
-        return f"""**문서 기반 질의응답**
-
-**제공된 참고 자료:**
-{context}
-
-**질문:** {query}
-**영역:** {domain}
-
-**답변 가이드라인:**
-위 참고 자료를 바탕으로 질문에 대해 다음과 같이 구조화된 답변을 제공해주세요:
-
-1. **문서 기반 핵심 답변**
-   - 제공된 자료에서 직접 추출한 정보
-   - 명확한 근거와 함께 제시
-
-2. **기술적 분석 및 해석**
-   - 자료 내용의 기술적 의미
-   - 실무적 적용 관점에서의 해석
-   - 연관 개념 및 원리 설명
-
-3. **실무 적용 지침**
-   - 구체적 적용 방법
-   - 단계별 구현 절차
-   - 도구 및 표준 활용 방안
-
-4. **전문가 견해**
-   - 자료에 명시되지 않은 실무적 고려사항
-   - 업계 동향 및 모범사례
-   - 향후 발전 방향
-
-5. **정보의 신뢰성**
-   - 자료 기반 정보와 추론 정보 구분
-   - 추가 확인이 필요한 사항 명시
-
-**중요:** 답변 시 반드시 제공된 참고 자료의 내용을 우선적으로 활용하고, 자료에 근거하지 않은 내용은 명확히 구분하여 표시해주세요."""
+    def generate_answer(self, query: str, context: str) -> Dict[str, Any]:
+        """기존 호환성을 위한 답변 생성 메서드"""
+        return self.generate_defense_response(query, context, "일반")
     
     def summarize_document(self, text: str, max_length: int = 500) -> str:
         """문서 요약"""
